@@ -1,113 +1,90 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import plotly.graph_objects as go
 from FinMind.data import DataLoader
 import datetime
 
-# 1. 頁面配置與風格
-st.set_page_config(page_title="AI 量價與國際局勢分析系統", layout="wide")
-st.title("📊 2026 台股 AI 全能分析儀表板 (K線/量價/新聞)")
+# 1. 頁面配置
+st.set_page_config(page_title="AI 事件驅動選股系統", layout="wide")
+st.title("🤖 AI 投資決策機器人：事件分析與選股")
 
-# 2. 國際局勢即時快報 (根據 2026/01 最新數據整理)
-with st.expander("🌍 2026年1月 國際市場關鍵趨勢"):
-    st.write("""
-    - **AI 浪潮持續：** CES 2026 展覽啟動，黃仁勳演講引領半導體多頭；DeepSeek 開放源代碼推動算力需求。
-    - **聯準會動態：** 市場預期降息防線鬆動，鮑爾接班人選成為 2026 焦點，美金匯率波動加劇。
-    - **傳產機會：** 美國基礎建設與航運需求受全球貿易政策影響，資金開始流向高股息與循環股。
-    """)
+# 2. 定義「事件與產業」關聯邏輯 (AI 知識庫)
+# 這裡模擬 AI 的判斷邏輯，實務上可串接 LLM API
+def ai_event_analyzer(keyword):
+    analysis = {
+        "委瑞內拉": {
+            "sectors": ["塑膠/石油", "航運", "軍工"],
+            "stocks": ["1301", "1303", "2603", "2634"],
+            "impact": "委瑞內拉為原油大國，地緣政治動盪將推升油價，對台塑三寶有利；避險需求可能帶動航運報價。"
+        },
+        "CES": {
+            "sectors": ["AI伺服器", "散熱", "半導體"],
+            "stocks": ["2330", "2382", "3017", "2454"],
+            "impact": "2026 CES 展點燃 AI 算力需求，散熱與伺服器代工廠為直接受惠者。"
+        },
+        "降息": {
+            "sectors": ["金融", "資產股", "科技成長股"],
+            "stocks": ["2881", "2882", "2330"],
+            "impact": "降息有利於銀行利差調整及高科技股評價提升。"
+        }
+    }
+    # 搜尋關鍵字匹配
+    for key in analysis:
+        if key in keyword:
+            return analysis[key]
+    return None
 
-# 3. 核心數據抓取與量價計算
-def get_advanced_data(sid):
+# 3. 價格建議邏輯 (簡單技術面支撐計算)
+def get_recommendation(sid):
     tk = yf.Ticker(f"{sid}.TW")
-    # 抓取 2 個月的資料確保計算 1 個月均量沒問題
-    hist = tk.history(period="2mo")
-    if hist.empty: return None
-
-    # 計算各週期成交量 (張數)
-    def calc_vol(days):
-        return int(hist['Volume'].tail(days).mean() / 1000)
-
-    vol_2d = calc_vol(2)
-    vol_5d = calc_vol(5)
-    vol_10d = calc_vol(10)
-    vol_1m = calc_vol(20) # 20個交易日約一個月
-
-    # 籌碼數據
-    api = DataLoader()
-    try:
-        df_chips = api.taiwan_stock_broker_trading(
-            stock_id=sid, 
-            start_date=(datetime.date.today() - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
-        )
-        last_date = df_chips['date'].max()
-        chips = (df_chips[df_chips['date'] == last_date]['buy'].sum() - df_chips[df_chips['date'] == last_date]['sell'].sum()) / 1000
-    except:
-        chips = 0
-
+    hist = tk.history(period="1mo")
+    curr_price = tk.fast_info.last_price
+    
+    # 建議購買價：設在 5 日線與 10 日線之間 (分批佈局位)
+    ma5 = hist['Close'].rolling(5).mean().iloc[-1]
+    ma10 = hist['Close'].rolling(10).mean().iloc[-1]
+    suggest_price = (ma5 + ma10) / 2
+    
     return {
-        "hist": hist, "price": tk.fast_info.last_price, "change": ((tk.fast_info.last_price / tk.fast_info.previous_close)-1)*100,
-        "v2": vol_2d, "v5": vol_5d, "v10": vol_10d, "v1m": vol_1m, "chips": chips, "name": tk.info.get('shortName', sid)
+        "name": tk.info.get('shortName', sid),
+        "curr": curr_price,
+        "suggest": round(suggest_price, 2),
+        "diff": round(((suggest_price / curr_price) - 1) * 100, 2)
     }
 
-# 4. 側邊欄控制
-st.sidebar.header("🔍 選股與分析配置")
-input_ids = st.sidebar.text_input("輸入股票代碼 (例: 2330,2454,2603)", "2330,2317,2454")
-stocks = [s.strip() for s in input_ids.split(",") if s.strip()]
+# --- 主介面 ---
+st.markdown("### 🔍 第一步：輸入時事關鍵字")
+keyword = st.text_input("輸入近期國際新聞或事件（例如：委瑞內拉總統、AI伺服器需求、CES 2026）", placeholder="請輸入關鍵字...")
 
-# 5. 主畫面：K線圖與量價分析
-for sid in stocks:
-    data = get_advanced_data(sid)
-    if not data: continue
+if keyword:
+    event_result = ai_event_analyzer(keyword)
     
-    with st.container():
-        col1, col2 = st.columns([3, 1])
+    if event_result:
+        st.success(f"✅ **AI 分析結果：** {event_result['impact']}")
         
-        with col1:
-            st.subheader(f"{sid} {data['name']} - 交互式 K 線圖")
-            # 繪製 K 線圖
-            fig = go.Figure(data=[go.Candlestick(
-                x=data['hist'].index,
-                open=data['hist']['Open'], high=data['hist']['High'],
-                low=data['hist']['Low'], close=data['hist']['Close'],
-                name='K線'
-            )])
-            fig.update_layout(height=400, margin=dict(l=0, r=0, b=0, t=0), xaxis_rangeslider_visible=False)
-            st.plotly_chart(fig, use_container_width=True)
-            
-        with col2:
-            st.write("### 📈 量價異動統計")
-            st.metric("即時股價", f"{data['price']:.2f}", f"{data['change']:.2f}%")
-            
-            # 成交量表格
-            vol_df = pd.DataFrame({
-                "週期": ["2天均量", "5天均量", "10天均量", "1個月均量"],
-                "張數": [data['v2'], data['v5'], data['v10'], data['v1m']]
-            })
-            st.table(vol_df)
-            
-            # 國際局勢自動診斷
-            st.write("### 🤖 AI 國際局勢診斷")
-            analysis = ""
-            if "AI" in data['name'] or sid in ["2330", "2454", "2382"]:
-                analysis = "✅ **受惠 CES 2026 題材：** 半導體與AI算力需求強勁，量能若突破 10 日均量可考慮加碼。"
-            elif data['v2'] > data['v1m'] * 1.5:
-                analysis = "🔥 **異常放量：** 短線資金湧入，結合目前美股開紅盤情緒，適合短線操作。"
-            else:
-                analysis = "💤 **盤整階段：** 量能平淡，建議等待聯準會下旬會議數據。"
-            st.info(analysis)
-    st.divider()
+        st.markdown("### 📈 第二步：受惠股票分析與購買建議")
+        recommend_data = []
+        for sid in event_result['stocks']:
+            with st.spinner(f"正在計算 {sid} 的最佳切入點..."):
+                rec = get_recommendation(sid)
+                recommend_data.append({
+                    "股票代號": sid,
+                    "名稱": rec['name'],
+                    "目前股價": rec['curr'],
+                    "建議買入價 (參考支撐)": rec['suggest'],
+                    "與現價差距": f"{rec['diff']}%",
+                    "操作建議": "分批低接" if rec['diff'] < 0 else "強勢突破中"
+                })
+        
+        st.table(pd.DataFrame(recommend_data))
+        
+        # 額外提供元大與即時量價 K 線
+        selected_sid = st.selectbox("選擇個股查看 K 線圖", event_result['stocks'])
+        # (這裡可以放入上一版本的 Plotly K 線程式碼...)
+        st.link_button(f"前往元大證券查看 {selected_sid} 深度報告", f"https://www.yuantastock.com.tw/static/investment/stock/{selected_sid}")
+        
+    else:
+        st.warning("目前 AI 庫中暫無此事件的關聯數據，請嘗試其他關鍵字（如：石油、AI、降息）。")
 
-# 6. 整理出適合的股票 (自動篩選邏輯)
-st.subheader("🌟 本週強勢篩選清單 (量價齊揚 + 國際題材)")
-recommend_list = []
-for sid in stocks:
-    d = get_advanced_data(sid)
-    if d and d['v2'] > d['v5'] and d['change'] > 0:
-        recommend_list.append({"代號": sid, "理由": "量能連續升溫，契合 2026 第一季多頭行情"})
-
-if recommend_list:
-    st.success(f"目前推薦關注：{', '.join([r['代號'] for r in recommend_list])}")
-    st.table(pd.DataFrame(recommend_list))
-else:
-    st.warning("目前暫無符合『量價齊揚』條件的個股，建議觀望。")
+st.markdown("---")
+st.caption("⚠️ 免責聲明：本網站所有數據及 AI 建議僅供參考，不代表投資要約，投資請自行評估風險。")
