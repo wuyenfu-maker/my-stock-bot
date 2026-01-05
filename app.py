@@ -5,86 +5,120 @@ from FinMind.data import DataLoader
 import datetime
 
 # 1. 頁面配置
-st.set_page_config(page_title="AI 事件驅動選股系統", layout="wide")
-st.title("🤖 AI 投資決策機器人：事件分析與選股")
+st.set_page_config(page_title="AI 台股全市場監測系統", layout="wide")
+st.title("🇹🇼 台股全市場 AI 監測 (含興櫃、上市、上櫃)")
 
-# 2. 定義「事件與產業」關聯邏輯 (AI 知識庫)
-# 這裡模擬 AI 的判斷邏輯，實務上可串接 LLM API
-def ai_event_analyzer(keyword):
+# 2. 快取：抓取全市場股票代碼與中英文對照表
+@st.cache_data
+def get_stock_mapping():
+    api = DataLoader()
+    # 抓取全市場基本資訊
+    df_info = api.taiwan_stock_info()
+    # 這裡的 df_info 包含了上市 (Taiwan Stock Exchange)、上櫃 (OTC)、興櫃 (Emerging)
+    # 我們整理出：代號, 中文名, 英文名
+    return df_info
+
+stock_map_df = get_stock_mapping()
+
+# 3. 核心數據處理函數
+def get_detailed_stock_info(sid):
+    # 從 FinMind 對照表找名字
+    info_row = stock_map_df[stock_map_df['stock_id'] == sid]
+    if info_row.empty:
+        return None
+    
+    ch_name = info_row['stock_name'].values[0]
+    # yfinance 獲取英文名與即時價格
+    # 台灣股票後綴邏輯：興櫃與上櫃通常用 .TWO，上市用 .TW
+    # 我們嘗試自動判斷，先試 .TW 再試 .TWO
+    ticker_str = f"{sid}.TW"
+    tk = yf.Ticker(ticker_str)
+    
+    try:
+        price = tk.fast_info.last_price
+        if price == 0 or price is None: # 如果抓不到，換 .TWO 試試
+            ticker_str = f"{sid}.TWO"
+            tk = yf.Ticker(ticker_str)
+            price = tk.fast_info.last_price
+    except:
+        ticker_str = f"{sid}.TWO"
+        tk = yf.Ticker(ticker_str)
+        price = tk.fast_info.last_price
+
+    en_name = tk.info.get('shortName', 'N/A')
+    
+    # 建議購買價計算 (5日/10日均線)
+    hist = tk.history(period="1mo")
+    suggest_price = 0
+    if not hist.empty:
+        ma5 = hist['Close'].rolling(5).mean().iloc[-1]
+        ma10 = hist['Close'].rolling(10).mean().iloc[-1]
+        suggest_price = round((ma5 + ma10) / 2, 2)
+
+    return {
+        "Stock ID": sid,
+        "中文名稱": ch_name,
+        "English Name": en_name,
+        "目前股價": price,
+        "建議買入價": suggest_price,
+        "市場類別": info_row['industry_category'].values[0]
+    }
+
+# 4. 事件選股邏輯 (加入興櫃標的)
+def event_logic(keyword):
     analysis = {
         "委瑞內拉": {
-            "sectors": ["塑膠/石油", "航運", "軍工"],
-            "stocks": ["1301", "1303", "2603", "2634"],
-            "impact": "委瑞內拉為原油大國，地緣政治動盪將推升油價，對台塑三寶有利；避險需求可能帶動航運報價。"
+            "impact": "地緣政治影響油價與航運，興櫃能源股可能受連動。",
+            "stocks": ["1301", "2603", "6505", "6901"] # 6901 示例興櫃/上櫃能源相關
         },
-        "CES": {
-            "sectors": ["AI伺服器", "散熱", "半導體"],
-            "stocks": ["2330", "2382", "3017", "2454"],
-            "impact": "2026 CES 展點燃 AI 算力需求，散熱與伺服器代工廠為直接受惠者。"
-        },
-        "降息": {
-            "sectors": ["金融", "資產股", "科技成長股"],
-            "stocks": ["2881", "2882", "2330"],
-            "impact": "降息有利於銀行利差調整及高科技股評價提升。"
+        "AI": {
+            "impact": "CES 2026 引發算力需求，除權值股外，可關注興櫃之微散熱或IC設計。",
+            "stocks": ["2330", "2382", "6695", "6719"] # 6719 力智等
         }
     }
-    # 搜尋關鍵字匹配
     for key in analysis:
         if key in keyword:
             return analysis[key]
     return None
 
-# 3. 價格建議邏輯 (簡單技術面支撐計算)
-def get_recommendation(sid):
-    tk = yf.Ticker(f"{sid}.TW")
-    hist = tk.history(period="1mo")
-    curr_price = tk.fast_info.last_price
-    
-    # 建議購買價：設在 5 日線與 10 日線之間 (分批佈局位)
-    ma5 = hist['Close'].rolling(5).mean().iloc[-1]
-    ma10 = hist['Close'].rolling(10).mean().iloc[-1]
-    suggest_price = (ma5 + ma10) / 2
-    
-    return {
-        "name": tk.info.get('shortName', sid),
-        "curr": curr_price,
-        "suggest": round(suggest_price, 2),
-        "diff": round(((suggest_price / curr_price) - 1) * 100, 2)
-    }
-
 # --- 主介面 ---
-st.markdown("### 🔍 第一步：輸入時事關鍵字")
-keyword = st.text_input("輸入近期國際新聞或事件（例如：委瑞內拉總統、AI伺服器需求、CES 2026）", placeholder="請輸入關鍵字...")
+st.sidebar.header("🔍 全市場搜尋")
+keyword = st.sidebar.text_input("輸入事件關鍵字 (如: 委瑞內拉、AI)", "")
 
 if keyword:
-    event_result = ai_event_analyzer(keyword)
-    
-    if event_result:
-        st.success(f"✅ **AI 分析結果：** {event_result['impact']}")
+    res = event_logic(keyword)
+    if res:
+        st.success(f"💡 AI 深度分析：{res['impact']}")
         
-        st.markdown("### 📈 第二步：受惠股票分析與購買建議")
-        recommend_data = []
-        for sid in event_result['stocks']:
-            with st.spinner(f"正在計算 {sid} 的最佳切入點..."):
-                rec = get_recommendation(sid)
-                recommend_data.append({
-                    "股票代號": sid,
-                    "名稱": rec['name'],
-                    "目前股價": rec['curr'],
-                    "建議買入價 (參考支撐)": rec['suggest'],
-                    "與現價差距": f"{rec['diff']}%",
-                    "操作建議": "分批低接" if rec['diff'] < 0 else "強勢突破中"
-                })
+        table_data = []
+        for sid in res['stocks']:
+            with st.spinner(f"正在抓取數據: {sid}..."):
+                info = get_detailed_stock_info(sid)
+                if info:
+                    table_data.append(info)
         
-        st.table(pd.DataFrame(recommend_data))
-        
-        # 額外提供元大與即時量價 K 線
-        selected_sid = st.selectbox("選擇個股查看 K 線圖", event_result['stocks'])
-        # (這裡可以放入上一版本的 Plotly K 線程式碼...)
-        st.link_button(f"前往元大證券查看 {selected_sid} 深度報告", f"https://www.yuantastock.com.tw/static/investment/stock/{selected_sid}")
-        
+        if table_data:
+            df_result = pd.DataFrame(table_data)
+            st.markdown("### 📊 推薦關注清單 (含中英文資訊)")
+            st.dataframe(df_result, use_container_width=True)
+            
+            # 選購建議
+            for item in table_data:
+                st.write(f"👉 **{item['中文名稱']} ({item['English Name']})**: "
+                         f"現價 {item['目前股價']}，建議關注價 **{item['建議買入價']}**")
     else:
-        st.warning("目前 AI 庫中暫無此事件的關聯數據，請嘗試其他關鍵字（如：石油、AI、降息）。")
+        st.warning("查無此事件，請輸入精確關鍵字或嘗試手動搜尋個股。")
 
 st.markdown("---")
-st.caption("⚠️ 免責聲明：本網站所有數據及 AI 建議僅供參考，不代表投資要約，投資請自行評估風險。")
+# 手動查詢區
+st.subheader("🔎 個股快速診斷")
+manual_sid = st.text_input("輸入任何股票代號 (如 2330 或 興櫃代號)", "")
+if manual_sid:
+    m_info = get_detailed_stock_info(manual_sid)
+    if m_info:
+        col1, col2 = st.columns(2)
+        col1.metric("中文名稱", m_info['中文名稱'])
+        col2.metric("English Name", m_info['English Name'])
+        st.json(m_info)
+    else:
+        st.error("找不到該股票代號，請確認輸入是否正確。")
