@@ -4,77 +4,62 @@ import yfinance as yf
 from FinMind.data import DataLoader
 import datetime
 
-# 1. 介面設定
-st.set_page_config(page_title="台股 AI 實時監測系統", layout="wide")
+# 1. 頁面標題與設定
+st.set_page_config(page_title="台股 AI 實時監測", layout="wide")
+st.title("📈 台股 AI 籌碼實時監測系統")
 
-# 2. 數據抓取函數 (串接真實 API)
-def get_live_data(stock_id):
-    # 即時股價與大盤 (Yahoo Finance)
-    ticker = yf.Ticker(f"{stock_id}.TW")
-    info = ticker.fast_info
+# 2. 功能函數：抓取 Yahoo Finance 即時價格與 FinMind 籌碼
+def get_stock_report(stock_id):
+    # 即時股價
+    tk = yf.Ticker(f"{stock_id}.TW")
+    price = tk.fast_info.last_price
+    change = ((price - tk.fast_info.previous_close) / tk.fast_info.previous_close) * 100
     
-    # 籌碼數據 (FinMind) - 獲取最新成交日
+    # 籌碼數據 (抓取最近一個交易日)
     api = DataLoader()
-    today = datetime.date.today()
-    start_date = (today - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
-    
     try:
-        chip_df = api.taiwan_stock_broker_trading(stock_id=stock_id, start_date=start_date)
-        # 計算最新一天的買賣超合計
-        latest_date = chip_df['date'].max()
-        day_chips = chip_df[chip_df['date'] == latest_date]
-        net_buy_shares = day_chips['buy'].sum() - day_chips['sell'].sum()
-        net_buy_vol = round(net_buy_shares / 1000, 1) # 換算成「張」
+        df_chips = api.taiwan_stock_broker_trading(
+            stock_id=stock_id, 
+            start_date=(datetime.date.today() - datetime.timedelta(days=10)).strftime('%Y-%m-%d')
+        )
+        last_date = df_chips['date'].max()
+        daily_sum = df_chips[df_chips['date'] == last_date]
+        net_vol = (daily_sum['buy'].sum() - daily_sum['sell'].sum()) / 1000 # 換算成張
     except:
-        net_buy_vol = "讀取中"
+        net_vol = 0
+        
+    return {"price": price, "change": change, "chips": net_vol, "name": tk.info.get('shortName', stock_id)}
 
-    return {
-        "price": info.last_price,
-        "change": ((info.last_price - info.previous_close) / info.previous_close) * 100,
-        "chips": net_buy_vol,
-        "name": yf.Ticker(f"{stock_id}.TW").info.get('shortName', stock_id)
-    }
+# 3. 側邊欄自訂選股
+st.sidebar.header("🔍 自訂追蹤")
+input_ids = st.sidebar.text_input("輸入股票代號 (逗號隔開)", "2330,2317,2454,2603")
+stocks = input_ids.split(",")
 
-# --- 網頁配置 ---
-st.title("🚀 台股 AI 籌碼實時選股系統")
-st.info("系統已串接 Yahoo Finance (即時股價) 與 FinMind (分點籌碼數據)")
-
-# 側邊欄：產業選擇
-st.sidebar.header("🎯 監測配置")
-sector = st.sidebar.selectbox("切換產業類別", ["半導體", "航運", "人工智慧", "重電/綠能"])
-manual_input = st.sidebar.text_input("或手動輸入股票代號 (逗號隔開)", "2330,2317,2454")
-
-# 決定要顯示哪些股票
-sector_map = {
-    "半導體": ["2330", "2454", "2303"],
-    "航運": ["2603", "2609", "2615"],
-    "人工智慧": ["2382", "3231", "2357"],
-    "重電/綠能": ["1513", "1503", "1519"]
-}
-stocks_to_show = manual_input.split(",") if manual_input != "2330,2317,2454" else sector_map[sector]
-
-# 顯示即時數據表格
-st.subheader(f"📊 {sector} 產業 - 實時多因子分析")
+# 4. 顯示表格
 results = []
-for sid in stocks_to_show:
-    with st.spinner(f'正在抓取 {sid} 的即時數據...'):
-        data = get_live_data(sid.strip())
+for sid in stocks:
+    sid = sid.strip()
+    with st.spinner(f'同步數據中: {sid}...'):
+        data = get_stock_report(sid)
         results.append({
             "代號": sid,
             "名稱": data['name'],
-            "成交價": f"{data['price']:.2f}",
+            "即時價": f"{data['price']:.2f}",
             "漲跌幅": f"{data['change']:.2f}%",
-            "主力買賣超 (張)": data['chips'],
-            "參考連結": f"https://www.yuantastock.com.tw/static/investment/stock/{sid}"
+            "主力買賣超 (張)": f"{data['chips']:.1f}",
+            "元大參考連結": f"https://www.yuantastock.com.tw/static/investment/stock/{sid}"
         })
 
 df = pd.DataFrame(results)
-st.dataframe(df, use_container_width=True)
+st.table(df)
 
-# 導入專業連結
+# 5. 導入外部專業資源連結
 st.markdown("---")
-st.subheader("🔗 深度分析工具 (直連元大/鉅亨網)")
-c1, c2, c3 = st.columns(3)
-with c1: st.link_button("元大證券 - 技術分析", f"https://www.yuantastock.com.tw/static/investment/stock/{stocks_to_show[0]}")
-with c2: st.link_button("鉅亨網 - 台股時事", "https://news.cnyes.com/news/cat/tw_stock")
-with c3: st.link_button("證交所 - 盤後籌碼", "https://www.twse.com.tw/zh/page/trading/fund/BFI82U.html")
+st.subheader("🔗 專業投資參考連結")
+col1, col2 = st.columns(2)
+with col1:
+    st.info("💡 **即時股價說明：** 串接 Yahoo Finance API，盤中每秒更新。")
+    st.link_button("前往【元大證券】技術分析", f"https://www.yuantastock.com.tw/static/investment/stock/{stocks[0].strip()}")
+with col2:
+    st.info("📊 **籌碼數據說明：** 串接證交所分點明細，每日 15:30 盤後更新。")
+    st.link_button("前往【鉅亨網】即時新聞", "https://news.cnyes.com/news/cat/tw_stock")
