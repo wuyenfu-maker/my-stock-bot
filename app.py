@@ -5,36 +5,36 @@ import plotly.graph_objects as go
 from FinMind.data import DataLoader
 import datetime
 
-# 1. 頁面初始化與快取
-st.set_page_config(page_title="AI 智慧事件選股系統", layout="wide")
+# 1. 頁面配置與資料讀取
+st.set_page_config(page_title="AI 台股全能決策系統", layout="wide")
 api = DataLoader()
 
 @st.cache_data
 def get_all_stock_info():
-    # 抓取全市場股票資訊（含興櫃、上市、上櫃）
+    # 抓取包含上市、上櫃、興櫃的全市場資訊
     return api.taiwan_stock_info()
 
 stock_info_df = get_all_stock_info()
 
-# 2. 定義時事與股票推薦邏輯 (智慧映射庫)
-EVENT_MAP = {
+# 2. 定義新聞事件與推薦邏輯 (擴充版)
+EVENT_DATABASE = {
     "委內瑞拉": {
-        "reason": "委內瑞拉地緣政治動盪推升油價，對塑化及航運避險有直接影響。",
-        "stocks": ["1301", "1303", "6505", "2603", "2609"]
+        "impact": "地緣政治緊張推升原油需求與航運報價。關注油價受惠股與避險航運。",
+        "stocks": ["1301", "1303", "6505", "2603", "2609", "6901"] # 含興櫃能源
     },
-    "AI/輝達/CES": {
-        "reason": "2026 CES 展引發算力升級潮，半導體與 AI 伺服器代工廠為核心受惠者。",
-        "stocks": ["2330", "2454", "2382", "3231", "3017"]
+    "AI": {
+        "impact": "2026 CES 展引領 AI 伺服器與半導體商機。關注龍頭廠與興櫃散熱黑馬。",
+        "stocks": ["2330", "2454", "2382", "3017", "6695", "6719"]
     },
-    "軍工/地緣緊張": {
-        "reason": "全球地緣政治局勢緊張，帶動無人機與防衛系統需求。",
-        "stocks": ["2634", "8033", "2645", "5222"] # 包含興櫃/上櫃潛力股
+    "降息": {
+        "impact": "資金成本降低，有利於金融股利差調整及高科技成長股評價回升。",
+        "stocks": ["2881", "2882", "2330", "2454"]
     }
 }
 
-# 3. 數據抓取與分析函數
-def analyze_stock(sid):
-    # 判斷後綴 (上市 .TW, 上櫃/興櫃 .TWO)
+# 3. 核心數據處理函數 (含中英文、成交量、建議價)
+def get_stock_analysis(sid):
+    # 判斷後綴
     tk = yf.Ticker(f"{sid}.TW")
     try:
         if tk.fast_info.last_price is None or tk.fast_info.last_price == 0:
@@ -45,81 +45,97 @@ def analyze_stock(sid):
     hist = tk.history(period="3mo")
     if hist.empty: return None
 
-    # 成交量分析 (張數)
-    vol_5d = int(hist['Volume'].tail(5).mean() / 1000)
-    vol_10d = int(hist['Volume'].tail(10).mean() / 1000)
-    vol_1m = int(hist['Volume'].tail(20).mean() / 1000)
+    # 各週期成交量 (張)
+    v2 = int(hist['Volume'].tail(2).mean() / 1000)
+    v5 = int(hist['Volume'].tail(5).mean() / 1000)
+    v10 = int(hist['Volume'].tail(10).mean() / 1000)
+    v1m = int(hist['Volume'].tail(20).mean() / 1000)
 
-    # 建議購買價：MA10 與 MA20 的中點 (回測支撐位)
+    # 建議買入價 (MA10 與 MA20 中點)
     ma10 = hist['Close'].rolling(10).mean().iloc[-1]
     ma20 = hist['Close'].rolling(20).mean().iloc[-1]
-    suggest_price = round((ma10 + ma20) / 2, 2)
+    suggest_p = round((ma10 + ma20) / 2, 2)
 
-    # 獲取中英文名稱
-    stock_detail = stock_info_df[stock_info_df['stock_id'] == sid]
-    ch_name = stock_detail['stock_name'].values[0] if not stock_detail.empty else "未知"
+    # 中英文名稱
+    detail = stock_info_df[stock_info_df['stock_id'] == sid]
+    cn_name = detail['stock_name'].values[0] if not detail.empty else "未知"
     en_name = tk.info.get('shortName', 'N/A')
 
     return {
-        "代號": sid, "中文名": ch_name, "英文名": en_name,
-        "現價": tk.fast_info.last_price, "5日均量": vol_5d,
-        "10日均量": vol_10d, "月均量": vol_1m,
-        "建議買入價": suggest_price, "狀態": "量增" if vol_5d > vol_1m else "盤整"
+        "sid": sid, "cn": cn_name, "en": en_name, "price": tk.fast_info.last_price,
+        "v2": v2, "v5": v5, "v10": v10, "v1m": v1m, "suggest": suggest_p, "hist": hist
     }
 
-# --- 4. 左側側邊欄設定 ---
-st.sidebar.title("🎯 投資決策中心")
+# --- 4. 左側側邊欄設定 (解決您紅框處的問題) ---
+st.sidebar.title("🎯 AI 智慧選股配置")
 
-# 新聞事件搜尋推薦
-st.sidebar.subheader("📰 時事事件推薦")
-news_query = st.sidebar.text_input("搜尋新聞關鍵字 (如: 委內瑞拉, AI, 輝達)", "")
+# A. 新聞事件搜尋推薦
+st.sidebar.subheader("📰 新聞事件搜尋")
+news_input = st.sidebar.text_input("搜尋關鍵字 (例: 委內瑞拉, AI)", "")
 
-# 行業分類選擇
+# B. 行業分類選擇
 st.sidebar.subheader("🏭 行業分類選擇")
-all_sectors = sorted(stock_info_df['industry_category'].unique().tolist())
-selected_sector = st.sidebar.selectbox("選擇特定行業進行掃描", ["請選擇"] + all_sectors)
+industry_list = sorted(stock_info_df['industry_category'].unique().tolist())
+selected_industry = st.sidebar.selectbox("選擇行業進行掃描", ["請選擇"] + industry_list)
 
-# --- 5. 主畫面邏輯 ---
-st.title("🚀 AI 台股事件分析與行業掃描儀表板")
+# C. 原本的代號輸入 (保留功能)
+st.sidebar.subheader("🔢 手動輸入代號")
+manual_input = st.sidebar.text_input("輸入股票代號 (逗號隔開)", "")
 
-# 處理「時事搜尋」
-if news_query:
-    st.markdown(f"### 🔍 新聞事件分析：{news_query}")
-    matched_event = next((v for k, v in EVENT_MAP.items() if any(sub in news_query for sub in k.split("/"))), None)
-    
-    if matched_event:
-        st.info(f"💡 **AI 邏輯：** {matched_event['reason']}")
-        results = []
-        for sid in matched_event['stocks']:
-            data = analyze_stock(sid)
-            if data: results.append(data)
-        st.table(pd.DataFrame(results))
+# --- 5. 主畫面呈現邏輯 ---
+st.title("📈 2026 台股 AI 全能決策儀表板")
+
+# 決定要分析的股票清單
+final_stocks = []
+analysis_title = "市場熱門個股掃描"
+
+if news_input:
+    matched = next((v for k, v in EVENT_DATABASE.items() if k in news_input), None)
+    if matched:
+        st.success(f"✅ **事件分析：** {matched['impact']}")
+        final_stocks = matched['stocks']
+        analysis_title = f"新聞事件推薦：{news_input}"
     else:
-        st.warning("目前數據庫暫無此事件的關聯推薦，建議嘗試：『委內瑞拉』、『AI』、『軍工』。")
+        st.warning("目前數據庫暫無此事件，建議嘗試『委內瑞拉』或『AI』")
 
-# 處理「行業分類」
-elif selected_sector != "請選擇":
-    st.markdown(f"### 🏭 行業深度掃描：{selected_sector}")
-    sector_stocks = stock_info_df[stock_info_df['industry_category'] == selected_sector].head(10) # 顯示前10大
-    
-    sector_results = []
-    for sid in sector_stocks['stock_id'].tolist():
-        data = analyze_stock(sid)
-        if data: sector_results.append(data)
-    
-    st.dataframe(pd.DataFrame(sector_results), use_container_width=True)
+elif selected_industry != "請選擇":
+    final_stocks = stock_info_df[stock_info_df['industry_category'] == selected_industry]['stock_id'].head(8).tolist()
+    analysis_title = f"行業掃描：{selected_industry}"
+
+elif manual_input:
+    final_stocks = [s.strip() for s in manual_input.split(",")]
+    analysis_title = "自訂選股分析"
+
+# 執行分析
+if final_stocks:
+    st.subheader(f"📊 {analysis_title}")
+    for sid in final_stocks:
+        data = get_stock_analysis(sid)
+        if not data: continue
+        
+        with st.expander(f"🔍 {data['sid']} {data['cn']} ({data['en']}) - 詳細量價與 K 線", expanded=True):
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                # K 線圖
+                fig = go.Figure(data=[go.Candlestick(
+                    x=data['hist'].index, open=data['hist']['Open'],
+                    high=data['hist']['High'], low=data['hist']['Low'], close=data['hist']['Close']
+                )])
+                fig.update_layout(height=350, margin=dict(l=0, r=0, b=0, t=0), xaxis_rangeslider_visible=False)
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                st.write(f"**目前股價：** {data['price']}")
+                st.write(f"**建議買入價：** :green[{data['suggest']}]")
+                vol_table = pd.DataFrame({
+                    "週期": ["2天均量", "5天均量", "10天均量", "月均量"],
+                    "張數": [data['v2'], data['v5'], data['v10'], data['v1m']]
+                })
+                st.table(vol_table)
+                st.link_button("前往元大技術面", f"https://www.yuantastock.com.tw/static/investment/stock/{sid}")
 
 else:
-    st.write("請從左側側邊欄 **輸入新聞關鍵字** 或 **選擇行業分類** 開始分析。")
-    # 預設展示熱門個股 K 線
-    st.divider()
-    st.subheader("🔥 今日市場關注個股 (K線)")
-    demo_sid = "2330"
-    tk_demo = yf.Ticker(f"{demo_sid}.TW")
-    h = tk_demo.history(period="3mo")
-    fig = go.Figure(data=[go.Candlestick(x=h.index, open=h['Open'], high=h['High'], low=h['Low'], close=h['Close'])])
-    fig.update_layout(title=f"{demo_sid} 台積電 實時K線圖", xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
+    st.info("💡 請從左側選單選擇 **新聞事件**、**行業分類** 或 **輸入代號** 開始數據分析。")
 
 st.markdown("---")
-st.caption("數據來源：Yahoo Finance, FinMind, 台灣證券交易所。AI 建議價格僅供參考。")
+st.caption("數據來源：Yahoo Finance, FinMind, 台灣證券交易所。興櫃股票數據可能依市場掛牌狀況有所延遲。")
