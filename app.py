@@ -4,83 +4,77 @@ import yfinance as yf
 from FinMind.data import DataLoader
 import datetime
 
-# 1. 網頁設定
-st.set_page_config(page_title="台股 AI 實時監測", layout="wide")
+# 1. 介面設定
+st.set_page_config(page_title="台股 AI 實時監測系統", layout="wide")
 
-# 2. 初始化數據抓取器 (使用 FinMind 抓取台股籌碼)
-api = DataLoader()
-
-def get_real_time_data(stock_id):
-    # 抓取即時股價 (Yahoo Finance)
+# 2. 數據抓取函數 (串接真實 API)
+def get_live_data(stock_id):
+    # 即時股價與大盤 (Yahoo Finance)
     ticker = yf.Ticker(f"{stock_id}.TW")
-    info = ticker.info
-    hist = ticker.history(period="5d")
+    info = ticker.fast_info
     
-    # 抓取券商籌碼 (FinMind) - 取最近一個交易日
-    end_date = datetime.date.today().strftime('%Y-%m-%d')
-    start_date = (datetime.date.today() - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
+    # 籌碼數據 (FinMind) - 獲取最新成交日
+    api = DataLoader()
+    today = datetime.date.today()
+    start_date = (today - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
     
     try:
-        # 抓取券商買賣超資料
-        chip_df = api.taiwan_stock_broker_trading(
-            stock_id=stock_id,
-            start_date=start_date,
-            end_date=end_date
-        )
-        # 計算前五大券商買賣超合計
-        net_buy = chip_df.groupby('broker_name')['buy'].sum().sum() - chip_df.groupby('broker_name')['sell'].sum().sum()
+        chip_df = api.taiwan_stock_broker_trading(stock_id=stock_id, start_date=start_date)
+        # 計算最新一天的買賣超合計
+        latest_date = chip_df['date'].max()
+        day_chips = chip_df[chip_df['date'] == latest_date]
+        net_buy_shares = day_chips['buy'].sum() - day_chips['sell'].sum()
+        net_buy_vol = round(net_buy_shares / 1000, 1) # 換算成「張」
     except:
-        net_buy = 0  # 萬一 API 沒資料時的防錯
+        net_buy_vol = "讀取中"
 
     return {
-        "price": info.get('regularMarketPrice', hist['Close'].iloc[-1]),
-        "change": info.get('regularMarketChangePercent', 0),
-        "net_buy": net_buy,
-        "name": info.get('shortName', '未知')
+        "price": info.last_price,
+        "change": ((info.last_price - info.previous_close) / info.previous_close) * 100,
+        "chips": net_buy_vol,
+        "name": yf.Ticker(f"{stock_id}.TW").info.get('shortName', stock_id)
     }
 
-# --- 介面開始 ---
-st.title("📊 台股實時籌碼選股機器人")
-st.caption("數據源：Yahoo Finance / 證交所 / FinMind (每日盤後更新)")
+# --- 網頁配置 ---
+st.title("🚀 台股 AI 籌碼實時選股系統")
+st.info("系統已串接 Yahoo Finance (即時股價) 與 FinMind (分點籌碼數據)")
 
-# 側邊欄：產業與個股手動輸入
-st.sidebar.header("🎯 追蹤設定")
-target_stocks = st.sidebar.text_input("輸入股票代號 (以逗號隔開)", "2330,2317,2603,1513")
-stock_list = target_stocks.split(",")
+# 側邊欄：產業選擇
+st.sidebar.header("🎯 監測配置")
+sector = st.sidebar.selectbox("切換產業類別", ["半導體", "航運", "人工智慧", "重電/綠能"])
+manual_input = st.sidebar.text_input("或手動輸入股票代號 (逗號隔開)", "2330,2317,2454")
 
-# 頂部大盤動態 (台指)
-with st.spinner('正在獲取最新數據...'):
-    taiex = yf.Ticker("^TWII").history(period="1d")
-    current_taiex = taiex['Close'].iloc[-1]
-    taiex_change = ((current_taiex - taiex['Open'].iloc[-1]) / taiex['Open'].iloc[-1]) * 100
+# 決定要顯示哪些股票
+sector_map = {
+    "半導體": ["2330", "2454", "2303"],
+    "航運": ["2603", "2609", "2615"],
+    "人工智慧": ["2382", "3231", "2357"],
+    "重電/綠能": ["1513", "1503", "1519"]
+}
+stocks_to_show = manual_input.split(",") if manual_input != "2330,2317,2454" else sector_map[sector]
 
-col1, col2 = st.columns(2)
-col1.metric("加權指數 (TAIEX)", f"{current_taiex:.2f}", f"{taiex_change:.2f}%")
-col2.info("💡 籌碼說明：券商買賣超數據於每日 15:30 盤後更新，股價為即時更新。")
-
-# 數據展示
-st.subheader("📋 個股多因子分析表")
-final_results = []
-
-for sid in stock_list:
-    try:
-        res = get_real_time_data(sid.strip())
-        final_results.append({
+# 顯示即時數據表格
+st.subheader(f"📊 {sector} 產業 - 實時多因子分析")
+results = []
+for sid in stocks_to_show:
+    with st.spinner(f'正在抓取 {sid} 的即時數據...'):
+        data = get_live_data(sid.strip())
+        results.append({
             "代號": sid,
-            "名稱": res['name'],
-            "現價": f"{res['price']:.2f}",
-            "漲跌幅": f"{res['change']:.2f}%",
-            "主力買賣超(張)": int(res['net_buy'] / 1000), # 換算成張
-            "狀態": "偏多" if res['net_buy'] > 0 else "偏空"
+            "名稱": data['name'],
+            "成交價": f"{data['price']:.2f}",
+            "漲跌幅": f"{data['change']:.2f}%",
+            "主力買賣超 (張)": data['chips'],
+            "參考連結": f"https://www.yuantastock.com.tw/static/investment/stock/{sid}"
         })
-    except:
-        continue
 
-df_display = pd.DataFrame(final_results)
-st.table(df_display)
+df = pd.DataFrame(results)
+st.dataframe(df, use_container_width=True)
 
-# 模擬時事新聞連結
+# 導入專業連結
 st.markdown("---")
-st.subheader("📰 相關投資參考連結")
-st.write(f"[查看 {stock_list[0]} 元大證券技術面](https://www.yuantastock.com.tw/static/investment/stock/{stock_list[0]})")
-st.write("[查看鉅亨網台股頭條](https://news.cnyes.com/news/cat/tw_stock)")
+st.subheader("🔗 深度分析工具 (直連元大/鉅亨網)")
+c1, c2, c3 = st.columns(3)
+with c1: st.link_button("元大證券 - 技術分析", f"https://www.yuantastock.com.tw/static/investment/stock/{stocks_to_show[0]}")
+with c2: st.link_button("鉅亨網 - 台股時事", "https://news.cnyes.com/news/cat/tw_stock")
+with c3: st.link_button("證交所 - 盤後籌碼", "https://www.twse.com.tw/zh/page/trading/fund/BFI82U.html")
