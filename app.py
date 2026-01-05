@@ -1,65 +1,86 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+import yfinance as yf
+from FinMind.data import DataLoader
+import datetime
 
-# 1. 網頁基本設定
-st.set_page_config(page_title="AI 智選機器人", layout="wide")
+# 1. 網頁設定
+st.set_page_config(page_title="台股 AI 實時監測", layout="wide")
 
-# 2. 模擬數據 (正式營運時可串接 API)
-data = {
-    "產業": ["半導體", "半導體", "航運", "航運", "重電", "AI伺服器"],
-    "股票名稱": ["台積電", "聯發科", "長榮", "陽明", "中興電", "廣達"],
-    "股價": [600, 1100, 155, 50, 120, 240],
-    "券商買賣超(張)": [1200, -300, 800, -120, 500, 1500],
-    "庫存變動(%)": [1.5, -0.2, 2.1, -0.5, 3.2, 4.5],
-    "新聞情緒指標": ["利多", "中立", "利空", "中立", "極有利", "利多"]
-}
-df = pd.DataFrame(data)
+# 2. 初始化數據抓取器 (使用 FinMind 抓取台股籌碼)
+api = DataLoader()
 
-# --- 網頁介面開始 ---
-st.title("📈 AI 產業籌碼選股機器人")
+def get_real_time_data(stock_id):
+    # 抓取即時股價 (Yahoo Finance)
+    ticker = yf.Ticker(f"{stock_id}.TW")
+    info = ticker.info
+    hist = ticker.history(period="5d")
+    
+    # 抓取券商籌碼 (FinMind) - 取最近一個交易日
+    end_date = datetime.date.today().strftime('%Y-%m-%d')
+    start_date = (datetime.date.today() - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
+    
+    try:
+        # 抓取券商買賣超資料
+        chip_df = api.taiwan_stock_broker_trading(
+            stock_id=stock_id,
+            start_date=start_date,
+            end_date=end_date
+        )
+        # 計算前五大券商買賣超合計
+        net_buy = chip_df.groupby('broker_name')['buy'].sum().sum() - chip_df.groupby('broker_name')['sell'].sum().sum()
+    except:
+        net_buy = 0  # 萬一 API 沒資料時的防錯
+
+    return {
+        "price": info.get('regularMarketPrice', hist['Close'].iloc[-1]),
+        "change": info.get('regularMarketChangePercent', 0),
+        "net_buy": net_buy,
+        "name": info.get('shortName', '未知')
+    }
+
+# --- 介面開始 ---
+st.title("📊 台股實時籌碼選股機器人")
+st.caption("數據源：Yahoo Finance / 證交所 / FinMind (每日盤後更新)")
+
+# 側邊欄：產業與個股手動輸入
+st.sidebar.header("🎯 追蹤設定")
+target_stocks = st.sidebar.text_input("輸入股票代號 (以逗號隔開)", "2330,2317,2603,1513")
+stock_list = target_stocks.split(",")
+
+# 頂部大盤動態 (台指)
+with st.spinner('正在獲取最新數據...'):
+    taiex = yf.Ticker("^TWII").history(period="1d")
+    current_taiex = taiex['Close'].iloc[-1]
+    taiex_change = ((current_taiex - taiex['Open'].iloc[-1]) / taiex['Open'].iloc[-1]) * 100
+
+col1, col2 = st.columns(2)
+col1.metric("加權指數 (TAIEX)", f"{current_taiex:.2f}", f"{taiex_change:.2f}%")
+col2.info("💡 籌碼說明：券商買賣超數據於每日 15:30 盤後更新，股價為即時更新。")
+
+# 數據展示
+st.subheader("📋 個股多因子分析表")
+final_results = []
+
+for sid in stock_list:
+    try:
+        res = get_real_time_data(sid.strip())
+        final_results.append({
+            "代號": sid,
+            "名稱": res['name'],
+            "現價": f"{res['price']:.2f}",
+            "漲跌幅": f"{res['change']:.2f}%",
+            "主力買賣超(張)": int(res['net_buy'] / 1000), # 換算成張
+            "狀態": "偏多" if res['net_buy'] > 0 else "偏空"
+        })
+    except:
+        continue
+
+df_display = pd.DataFrame(final_results)
+st.table(df_display)
+
+# 模擬時事新聞連結
 st.markdown("---")
-
-# 3. 側邊欄：功能選擇
-st.sidebar.header("🔍 篩選條件")
-selected_sector = st.sidebar.selectbox("選擇關注產業", ["全部"] + list(df["產業"].unique()))
-market_trend = st.sidebar.radio("當前大盤走勢", ["多頭 (站在均線上)", "空頭 (跌破均線)"])
-
-# 4. 頂部看板：大盤摘要
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("大盤狀態", "偏多" if market_trend == "多頭 (站在均線上)" else "警示", delta="穩定" if market_trend == "多頭 (站在均線上)" else "-150")
-with col2:
-    st.metric("主力動向", "集結中", delta="5,432 萬")
-with col3:
-    st.metric("AI 推薦信心", "85%")
-
-# 5. 主內容區：產業個股分析
-st.subheader(f"📊 {selected_sector} 產業即時分析")
-
-# 篩選邏輯
-display_df = df if selected_sector == "全部" else df[df["產業"] == selected_sector]
-
-# 呈現表格 (加上顏色標籤)
-def color_sentiment(val):
-    color = 'red' if val == '利多' or val == '極有利' else ('green' if val == '利空' else 'white')
-    return f'color: {color}'
-
-st.dataframe(display_df.style.applymap(color_sentiment, subset=['新聞情緒指標']))
-
-# 6. AI 深度解讀區
-st.markdown("---")
-st.subheader("💡 AI 投資決策建議")
-
-# 模擬 AI 邏輯判斷
-if market_trend == "多頭 (站在均線上)":
-    st.success("✅ **當前環境：** 大盤強勢，建議關注「券商買超」且「新聞情緒利多」的股票。")
-else:
-    st.warning("⚠️ **當前環境：** 大盤弱勢，建議縮減部位，僅關注籌碼高度集中的防禦型個股。")
-
-# 假設針對選中第一筆的 AI 點評
-target = display_df.iloc[0]
-st.info(f"**AI 對 {target['股票名稱']} 的評價：** 該股券商庫存持續增加 {target['庫存變動(%)']}%，且時事新聞顯示其產業前景佳，建議分批佈局。")
-
-# 7. 籌碼視覺化
-st.bar_chart(display_df.set_index("股票名稱")["券商買賣超(張)"])
+st.subheader("📰 相關投資參考連結")
+st.write(f"[查看 {stock_list[0]} 元大證券技術面](https://www.yuantastock.com.tw/static/investment/stock/{stock_list[0]})")
+st.write("[查看鉅亨網台股頭條](https://news.cnyes.com/news/cat/tw_stock)")
